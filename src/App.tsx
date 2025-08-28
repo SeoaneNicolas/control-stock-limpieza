@@ -1,44 +1,40 @@
 import React, { useState, useEffect } from 'react';
-import { Container } from 'react-bootstrap';
+import { Container, Button, ButtonGroup } from 'react-bootstrap';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
+import { db } from './firebase';
 import Header from './components/Header';
 import ProductList from './components/ProductList';
+import ProductTable from './components/ProductTable';
 import ProductModal from './components/ProductModal';
 import { Product } from './types/Product';
 import './App.css';
 
-// Omitimos 'id' pero ahora también 'imageUrl' al crear, ya que se generará automáticamente
 type NewProduct = Omit<Product, 'id' | 'imageUrl'>;
+type ViewMode = 'board' | 'list';
 
 const App: React.FC = () => {
-  const [products, setProducts] = useState<Product[]>(() => {
-    try {
-      const storedProducts = localStorage.getItem('products');
-      if (storedProducts) {
-        return JSON.parse(storedProducts);
-      }
-    } catch (error) {
-      console.error("Error parsing products from localStorage", error);
-    }
-    // Si no hay nada en localStorage, o hay un error, se usa la lista por defecto.
-    return [
-      { id: 1, name: 'Lavandina', description: 'Botella de 1L', price: 150.0, stock: 50, imageUrl: 'https://picsum.photos/seed/lavandina/400/300' },
-      { id: 2, name: 'Detergente', description: 'Botella de 500ml', price: 120.5, stock: 40, imageUrl: 'https://picsum.photos/seed/detergente/400/300' },
-      { id: 3, name: 'Limpiador Multiuso', description: 'Aerosol de 750ml', price: 200.0, stock: 60, imageUrl: 'https://picsum.photos/seed/limpiador/400/300' },
-      { id: 4, name: 'Bolsas de Residuos', description: 'Paquete de 20 unidades', price: 80.0, stock: 100, imageUrl: 'https://picsum.photos/seed/bolsas/400/300' },
-    ];
-  });
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('products', JSON.stringify(products));
-    } catch (error) {
-      console.error("Error saving products to localStorage", error);
-    }
-  }, [products]);
+    const unsubscribe = onSnapshot(collection(db, "products"), (snapshot) => {
+      const productsData: Product[] = [];
+      snapshot.forEach((doc) => {
+        productsData.push({ ...doc.data(), id: doc.id } as Product);
+      });
+      setProducts(productsData);
+      setLoading(false);
+    });
+
+    // Cleanup subscription on unmount
+    return () => unsubscribe();
+  }, []);
+
 
   const [showModal, setShowModal] = useState(false);
   const [productToEdit, setProductToEdit] = useState<Product | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [viewMode, setViewMode] = useState<ViewMode>('board');
 
   const handleCloseModal = () => {
     setShowModal(false);
@@ -55,34 +51,38 @@ const App: React.FC = () => {
     setShowModal(true);
   };
 
-  const handleAddProduct = (productToAdd: NewProduct) => {
-    const newId = products.length > 0 ? Math.max(...products.map(p => p.id)) + 1 : 1;
-    const newProduct: Product = {
-      id: newId,
-      ...productToAdd,
-      // Genera una imagen única basada en el nuevo ID
-      imageUrl: `https://picsum.photos/seed/${newId}/400/300`,
-    };
-    setProducts([...products, newProduct]);
+  const handleAddProduct = async (productToAdd: NewProduct) => {
+    try {
+      const docRef = await addDoc(collection(db, "products"), {
+        ...productToAdd,
+        imageUrl: `https://picsum.photos/seed/${Math.random()}/400/300`,
+      });
+      console.log("Document written with ID: ", docRef.id);
+    } catch (e) {
+      console.error("Error adding document: ", e);
+    }
     handleCloseModal();
   };
 
-  const handleStockChange = (productId: number, amount: number) => {
-    setProducts(products.map(p => 
-      p.id === productId 
-        ? { ...p, stock: Math.max(0, p.stock + amount) } // Evita stock negativo
-        : p
-    ));
-  };
-
-  const handleDeleteProduct = (productId: number) => {
-    if (window.confirm('¿Estás seguro de que deseas eliminar este producto?')) {
-      setProducts(products.filter(p => p.id !== productId));
+  const handleStockChange = async (productId: string, amount: number) => {
+    const productRef = doc(db, "products", productId);
+    const product = products.find(p => p.id === productId);
+    if (product) {
+      const newStock = Math.max(0, product.stock + amount);
+      await updateDoc(productRef, { stock: newStock });
     }
   };
 
-  const handleUpdateProduct = (updatedProduct: Product) => {
-    setProducts(products.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+  const handleDeleteProduct = async (productId: string) => {
+    if (window.confirm('¿Estás seguro de que deseas eliminar este producto?')) {
+      await deleteDoc(doc(db, "products", productId));
+    }
+  };
+
+  const handleUpdateProduct = async (updatedProduct: Product) => {
+    const productRef = doc(db, "products", updatedProduct.id);
+    const { id, ...productData } = updatedProduct;
+    await updateDoc(productRef, productData);
     handleCloseModal();
   };
 
@@ -90,17 +90,39 @@ const App: React.FC = () => {
     p.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  if (loading) {
+    return <div>Cargando productos...</div>;
+  }
+
   return (
     <div>
       <Header searchTerm={searchTerm} onSearchChange={setSearchTerm} />
       <Container className="mt-4">
-        <ProductList 
-          products={filteredProducts} 
-          onAddProduct={handleShowModal} 
-          onStockChange={handleStockChange} 
-          onDeleteProduct={handleDeleteProduct}
-          onStartEdit={handleStartEdit}
-        />
+        <div className="d-flex justify-content-between align-items-center mb-4">
+          <h1 className="mb-0">Inventario</h1>
+          <div>
+            <ButtonGroup className="me-2">
+              <Button variant={viewMode === 'board' ? 'primary' : 'outline-primary'} onClick={() => setViewMode('board')}>Tarjetas</Button>
+              <Button variant={viewMode === 'list' ? 'primary' : 'outline-primary'} onClick={() => setViewMode('list')}>Lista</Button>
+            </ButtonGroup>
+            <Button variant="success" size="lg" onClick={handleShowModal}>+ Añadir Producto</Button>
+          </div>
+        </div>
+        {viewMode === 'board' ? (
+          <ProductList 
+            products={filteredProducts} 
+            onStockChange={handleStockChange} 
+            onDeleteProduct={handleDeleteProduct}
+            onStartEdit={handleStartEdit}
+          />
+        ) : (
+          <ProductTable
+            products={filteredProducts}
+            onStockChange={handleStockChange}
+            onDeleteProduct={handleDeleteProduct}
+            onStartEdit={handleStartEdit}
+          />
+        )}
       </Container>
       <ProductModal 
         show={showModal} 
