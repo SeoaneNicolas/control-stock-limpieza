@@ -1,3 +1,12 @@
+ "homepage":
+     "http://SeoaneNicolas.github.io/control-stock-limpieza",
+       * Añade los scripts predeploy y deploy dentro de la sección
+         "scripts":
+           "scripts": {
+             // ... otros scripts
+             "predeploy": "npm run build",
+              "deploy": "gh-pages -d build"
+           }
 {
   "name": "stock-control-app",
   "version": "0.1.0",
